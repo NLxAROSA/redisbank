@@ -12,19 +12,21 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.redis.lettucemod.api.StatefulRedisModulesConnection;
-import com.redis.lettucemod.api.sync.RediSearchCommands;
-import com.redis.lettucemod.search.Field;
-import com.redis.lettucemod.timeseries.CreateOptions;
-import com.redislabs.demos.redisbank.SerializationUtil;
-import com.redislabs.demos.redisbank.Utilities;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.redis.lettucemod.api.StatefulRedisModulesConnection;
+import com.redis.lettucemod.api.sync.RediSearchCommands;
+import com.redis.lettucemod.search.Field;
+import com.redis.lettucemod.search.TextField;
+import com.redis.lettucemod.timeseries.CreateOptions;
+import com.redis.lettucemod.timeseries.Sample;
+import com.redislabs.demos.redisbank.SerializationUtil;
+import com.redislabs.demos.redisbank.Utilities;
 
 import io.lettuce.core.RedisCommandExecutionException;
 
@@ -48,7 +50,9 @@ public class BankTransactionGenerator {
     private final StringRedisTemplate redis;
     private final StatefulRedisModulesConnection<String, String> connection;
 
-    public BankTransactionGenerator(StringRedisTemplate redis, StatefulRedisModulesConnection<String, String> connection) throws NoSuchAlgorithmException, UnsupportedEncodingException {
+    public BankTransactionGenerator(StringRedisTemplate redis,
+            StatefulRedisModulesConnection<String, String> connection)
+            throws NoSuchAlgorithmException, UnsupportedEncodingException {
         this.redis = redis;
         this.connection = connection;
         transactionSources = SerializationUtil.loadObjectList(TransactionSource.class, "/transaction_sources.csv");
@@ -66,20 +70,20 @@ public class BankTransactionGenerator {
     private void createSearchIndices() {
         RediSearchCommands<String, String> commands = connection.sync();
         try {
-            commands.dropindex(ACCOUNT_INDEX);
-            commands.dropindex(SEARCH_INDEX);
+            commands.ftDropindex(ACCOUNT_INDEX);
+            commands.ftDropindex(SEARCH_INDEX);
         } catch (RedisCommandExecutionException e) {
             if (!e.getMessage().equals("Unknown Index name")) {
                 LOGGER.error("Error dropping index: {}", e.getMessage());
                 throw new RuntimeException(e);
             }
         }
-        commands.create(ACCOUNT_INDEX, Field.text("toAccountName").build());
+        commands.ftCreate(ACCOUNT_INDEX, Field.text("toAccountName").build());
         LOGGER.info("Created {} index", ACCOUNT_INDEX);
 
-        commands.create(SEARCH_INDEX, Field.text("description").matcher(Field.TextField.PhoneticMatcher.ENGLISH).build(),
-                Field.text("fromAccountName").matcher(Field.TextField.PhoneticMatcher.ENGLISH).build(),
-                Field.text("transactionType").matcher(Field.TextField.PhoneticMatcher.ENGLISH).build());
+        commands.ftCreate(SEARCH_INDEX, Field.text("description").matcher(TextField.PhoneticMatcher.ENGLISH).build(),
+                Field.text("fromAccountName").matcher(TextField.PhoneticMatcher.ENGLISH).build(),
+                Field.text("transactionType").matcher(TextField.PhoneticMatcher.ENGLISH).build());
         LOGGER.info("Created {} index", SEARCH_INDEX);
     }
 
@@ -89,10 +93,11 @@ public class BankTransactionGenerator {
 
     }
 
+    @SuppressWarnings({ "rawtypes", "unchecked" })
     private void createTimeSeries() {
         redis.delete(BALANCE_TS);
         CreateOptions co = CreateOptions.builder().retentionPeriod(0).build();
-        connection.sync().create(BALANCE_TS, co);
+        connection.sync().tsCreate(BALANCE_TS, co);
         LOGGER.info("Created {} time seris", BALANCE_TS);
     }
 
@@ -150,7 +155,7 @@ public class BankTransactionGenerator {
         }
 
         balance = balance + roundedAmount;
-        connection.sync().addAutoTimestamp(BALANCE_TS, balance);
+        connection.sync().tsAdd(BALANCE_TS, Sample.of(balance));
         redis.opsForZSet().incrementScore(SORTED_SET_KEY, accountName, roundedAmount * -1);
 
         return nf.format(roundedAmount);
